@@ -1,9 +1,14 @@
 # 📸 Gerador Automático de Prints de Vídeo
 
+[![Built with AI](https://img.shields.io/badge/Built%20with-AI%20🤖-informational.svg)](#)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![CustomTkinter](https://img.shields.io/badge/GUI-CustomTkinter-blueviolet.svg)](https://github.com/TomSchimansky/CustomTkinter)
 [![OpenCV](https://img.shields.io/badge/CV-OpenCV-green.svg)](https://opencv.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+> [!NOTE]
+> **Aviso de Projeto:**  
+> Este projeto foi **100% desenvolvido por Inteligência Artificial** como uma ferramenta utilitária simples, direta e prática para o dia a dia. É disponibilizado publicamente "no estado em que se encontra" (*as-is*), sem pretensão de ser um produto comercial complexo ou de contar com suporte ativo contínuo, servindo como uma solução funcional e aberta para uso e adaptação.
 
 Aplicação desktop moderna e nativa em Python (**CustomTkinter** + **OpenCV**) para extração automatizada de frames e prints de vídeos com suporte a múltiplos modos de captura, refinamento inteligente e galeria integrada.
 
