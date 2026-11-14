@@ -14,23 +14,16 @@ class ModeRandomFrame(ctk.CTkFrame):
         master,
         on_change: Optional[Callable[[], None]] = None,
         on_refine_requested: Optional[Callable[[], None]] = None,
-        on_select_all: Optional[Callable[[], None]] = None,
-        on_clear_selection: Optional[Callable[[], None]] = None,
-        on_delete_selected: Optional[Callable[[], None]] = None,
-        on_move_selected: Optional[Callable[[], None]] = None,
         **kwargs
     ):
         super().__init__(master, **kwargs)
         self.on_change = on_change
         self.on_refine_requested = on_refine_requested
-        self.on_select_all = on_select_all
-        self.on_clear_selection = on_clear_selection
-        self.on_delete_selected = on_delete_selected
-        self.on_move_selected = on_move_selected
 
         self.video_duration: Optional[float] = None
         self.selected_gallery_count = 0
         self.selected_timestamps: List[float] = []
+        self.existing_gallery_timestamps: List[float] = []
 
         self._create_widgets()
         self._update_preview()
@@ -159,60 +152,6 @@ class ModeRandomFrame(ctk.CTkFrame):
         )
         lbl_per_hint.pack(side="left", padx=6)
 
-        # Controles de seleção rápida da galeria
-        sel_ctrl_frame = ctk.CTkFrame(box_step2, fg_color="transparent")
-        sel_ctrl_frame.pack(fill="x", padx=8, pady=(2, 4))
-
-        self.btn_select_all = ctk.CTkButton(
-            sel_ctrl_frame,
-            text="Marcar Todos",
-            width=90,
-            height=24,
-            font=ctk.CTkFont(size=11),
-            fg_color=("#4a4a4a", "#3a3a3a"),
-            hover_color=("#5a5a5a", "#4a4a4a"),
-            command=self._handle_select_all
-        )
-        self.btn_select_all.pack(side="left", padx=(0, 4))
-
-        self.btn_clear_sel = ctk.CTkButton(
-            sel_ctrl_frame,
-            text="Desmarcar",
-            width=80,
-            height=24,
-            font=ctk.CTkFont(size=11),
-            fg_color=("#4a4a4a", "#3a3a3a"),
-            hover_color=("#5a5a5a", "#4a4a4a"),
-            command=self._handle_clear_selection
-        )
-        self.btn_clear_sel.pack(side="left")
-
-        self.btn_move_selected = ctk.CTkButton(
-            sel_ctrl_frame,
-            text="📁 Mover",
-            width=75,
-            height=24,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color=("#2563eb", "#1d4ed8"),
-            hover_color=("#3b82f6", "#2563eb"),
-            state="disabled",
-            command=self._handle_move_selected
-        )
-        self.btn_move_selected.pack(side="left", padx=(4, 0))
-
-        self.btn_delete_selected = ctk.CTkButton(
-            sel_ctrl_frame,
-            text="🗑 Apagar",
-            width=75,
-            height=24,
-            font=ctk.CTkFont(size=11, weight="bold"),
-            fg_color=("#c0392b", "#962d22"),
-            hover_color=("#e74c3c", "#c0392b"),
-            state="disabled",
-            command=self._handle_delete_selected
-        )
-        self.btn_delete_selected.pack(side="left", padx=(4, 0))
-
         # Indicador de prints selecionados
         self.lbl_selected_status = ctk.CTkLabel(
             box_step2,
@@ -220,7 +159,7 @@ class ModeRandomFrame(ctk.CTkFrame):
             font=ctk.CTkFont(size=11, weight="bold"),
             text_color=("gray40", "gray60")
         )
-        self.lbl_selected_status.pack(anchor="w", padx=8, pady=(2, 4))
+        self.lbl_selected_status.pack(anchor="w", padx=8, pady=(4, 4))
 
         # Botão de Ação do Refinamento
         self.btn_refine_action = ctk.CTkButton(
@@ -263,10 +202,17 @@ class ModeRandomFrame(ctk.CTkFrame):
         self.video_duration = duration
         self._update_preview()
 
-    def update_selection(self, count: int, timestamps: Optional[List[float]] = None):
-        """Atualiza a quantidade e instantes dos itens marcados na galeria."""
+    def update_selection(
+        self,
+        count: int,
+        timestamps: Optional[List[float]] = None,
+        existing_timestamps: Optional[List[float]] = None
+    ):
+        """Atualiza a quantidade, instantes dos itens marcados e lista total da galeria."""
         self.selected_gallery_count = count
         self.selected_timestamps = timestamps or []
+        if existing_timestamps is not None:
+            self.existing_gallery_timestamps = existing_timestamps
         self._update_status_display()
         self._update_preview()
 
@@ -296,10 +242,13 @@ class ModeRandomFrame(ctk.CTkFrame):
             ref_t = self.selected_timestamps[0]
             start_t = max(0.0, ref_t - window)
             end_t = min(dur, ref_t + window)
-            pts = VideoProcessor.calculate_refinement_timestamps([ref_t], window, per_pt, dur)
+            exclude = self.existing_gallery_timestamps or self.selected_timestamps
+            pts = VideoProcessor.calculate_refinement_timestamps([ref_t], window, per_pt, dur, exclude_timestamps=exclude)
             pts_str = ", ".join(format_timestamp_display(t) for t in pts[:4])
             if len(pts) > 4:
-                pts_str += f"... ({len(pts)} frames)"
+                pts_str += f"... ({len(pts)} novos frames)"
+            elif not pts:
+                pts_str = "nenhum frame novo (todos já existem)"
 
             edge_note = ""
             if (ref_t - window) < 0:
@@ -310,7 +259,7 @@ class ModeRandomFrame(ctk.CTkFrame):
             txt_s2 = (
                 f"• Etapa 2 (Ex: seu print em {format_timestamp_display(ref_t)}):\n"
                 f"  Busca ±{window:.1f}s -> janela [{format_timestamp_display(start_t)} até {format_timestamp_display(end_t)}]{edge_note}.\n"
-                f"  Gera {per_pt} fotos espaçadas: {pts_str}."
+                f"  Gera novos frames espaçados (excluindo o original): {pts_str}."
             )
         else:
             sample_center = 10.0
@@ -333,32 +282,13 @@ class ModeRandomFrame(ctk.CTkFrame):
         if self.on_change:
             self.on_change()
 
-    def _handle_select_all(self):
-        if self.on_select_all:
-            self.on_select_all()
-
-    def _handle_clear_selection(self):
-        if self.on_clear_selection:
-            self.on_clear_selection()
-
-    def _handle_move_selected(self):
-        if self.on_move_selected:
-            self.on_move_selected()
-
-    def _handle_delete_selected(self):
-        if self.on_delete_selected:
-            self.on_delete_selected()
-
     def _handle_refine_requested(self):
         if self.on_refine_requested:
             self.on_refine_requested()
 
     def _update_status_display(self):
         pts = self.selected_gallery_count
-        per_point = int(self.stepper_refine_count.get_value())
-        total_to_generate = pts * per_point
-
-        if pts == 0:
+        if pts == 0 or not self.selected_timestamps:
             self.lbl_selected_status.configure(
                 text="Nenhum print selecionado na galeria.",
                 text_color=("gray40", "gray60")
@@ -367,42 +297,29 @@ class ModeRandomFrame(ctk.CTkFrame):
                 state="disabled",
                 text="🎯 Gerar Prints ao Redor (0 selecionados)"
             )
-            self.btn_move_selected.configure(
-                state="disabled",
-                text="📁 Mover"
-            )
-            self.btn_delete_selected.configure(
-                state="disabled",
-                text="🗑 Apagar"
-            )
         else:
+            window = float(self.stepper_refine_window.get_value())
+            per_point = int(self.stepper_refine_count.get_value())
+            dur = self.video_duration or 600.0
+            exclude = self.existing_gallery_timestamps or self.selected_timestamps
+            timestamps_to_gen = VideoProcessor.calculate_refinement_timestamps(
+                self.selected_timestamps, window, per_point, dur, exclude_timestamps=exclude
+            )
+            total_to_generate = len(timestamps_to_gen)
+
             self.lbl_selected_status.configure(
-                text=f"{pts} print(s) selecionado(s) na galeria (Total: {total_to_generate} frames)",
+                text=f"{pts} print(s) selecionado(s) na galeria (Inéditos: {total_to_generate} frames)",
                 text_color=("#0284c7", "#38bdf8")
             )
             self.btn_refine_action.configure(
-                state="normal",
-                text=f"🎯 Gerar Prints ao Redor ({total_to_generate} frames)"
-            )
-            self.btn_move_selected.configure(
-                state="normal",
-                text=f"📁 Mover ({pts})"
-            )
-            self.btn_delete_selected.configure(
-                state="normal",
-                text=f"🗑 Apagar ({pts})"
+                state="normal" if total_to_generate > 0 else "disabled",
+                text=f"🎯 Gerar Prints ao Redor ({total_to_generate} novos frames)"
             )
 
     def set_processing(self, is_processing: bool):
         if is_processing:
             self.btn_refine_action.configure(state="disabled")
-            self.btn_select_all.configure(state="disabled")
-            self.btn_clear_sel.configure(state="disabled")
-            self.btn_move_selected.configure(state="disabled")
-            self.btn_delete_selected.configure(state="disabled")
         else:
-            self.btn_select_all.configure(state="normal")
-            self.btn_clear_sel.configure(state="normal")
             self._update_status_display()
 
     def get_timestamps(self, duration: float) -> List[float]:
@@ -411,12 +328,20 @@ class ModeRandomFrame(ctk.CTkFrame):
         count = int(self.stepper_random_count.get_value())
         return VideoProcessor.calculate_stratified_random_timestamps(duration, count)
 
-    def get_refinement_timestamps(self, base_timestamps: List[float], duration: float) -> List[float]:
+    def get_refinement_timestamps(
+        self,
+        base_timestamps: List[float],
+        duration: float,
+        exclude_timestamps: Optional[List[float]] = None
+    ) -> List[float]:
         if duration <= 0 or not base_timestamps:
             return []
         window = float(self.stepper_refine_window.get_value())
         count = int(self.stepper_refine_count.get_value())
-        return VideoProcessor.calculate_refinement_timestamps(base_timestamps, window, count, duration)
+        exclude = exclude_timestamps if exclude_timestamps is not None else self.existing_gallery_timestamps
+        return VideoProcessor.calculate_refinement_timestamps(
+            base_timestamps, window, count, duration, exclude_timestamps=exclude
+        )
 
     def load_config(self, config: Dict[str, Any]):
         self.stepper_random_count.set_value(config.get("random_count", 15))

@@ -1,5 +1,5 @@
 """
-Ponto de entrada do Gerador Automático de Prints de Vídeo.
+Ponto de entrada do FrameTick — Precision Video Captures.
 """
 import sys
 import os

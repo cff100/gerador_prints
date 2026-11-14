@@ -4,6 +4,7 @@ Janela Principal da Aplicação Gerador de Prints de Vídeo (CustomTkinter).
 import os
 import queue
 import threading
+import tkinter as tk
 import traceback
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
@@ -32,9 +33,18 @@ class MainWindow(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        self.title("Gerador Automático de Prints de Vídeo")
+        self.title("FrameTick — Precision Video Captures")
         self.geometry("1100x780")
         self.minsize(950, 680)
+
+        # Abre a janela maximizada (tela cheia)
+        # POR QUÊ: `self.after(0, ...)` garante que a geometria base seja registrada
+        # antes do Windows aplicar o estado maximizado ("zoomed"), permitindo que o
+        # usuário possa desmaximizar/restaurar sem perder as dimensões ideais.
+        try:
+            self.after(0, lambda: self.state("zoomed"))
+        except Exception:
+            pass
 
         icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "icon.ico")
         if os.path.exists(icon_path):
@@ -57,10 +67,39 @@ class MainWindow(ctk.CTk):
         self._load_and_apply_config()
         self._check_queue()
 
-        # Atalhos globais de teclado
-        self.bind("<Delete>", lambda e: self.gallery.delete_selected() if self.gallery.get_selected_items() else None)
-        self.bind("<Control-m>", lambda e: self._open_move_dialog() if self.gallery.get_selected_items() else None)
-        self.bind("<Control-M>", lambda e: self._open_move_dialog() if self.gallery.get_selected_items() else None)
+        # Atalhos globais de teclado protegidos contra digitação em campos de texto
+        self.bind("<Delete>", self._handle_global_delete)
+        self.bind("<Control-m>", self._handle_global_move)
+        self.bind("<Control-M>", self._handle_global_move)
+
+    def _is_typing_in_entry(self, event=None) -> bool:
+        """
+        Verifica se o foco atual está em um campo de entrada de texto.
+
+        POR QUÊ:
+        No Tkinter, eventos de teclado borbulham (bubbling) dos widgets filhos
+        para a janela raiz. Se o usuário estiver editando o prefixo ou um stepper
+        e pressionar Delete, sem essa verificação o app dispararia a exclusão
+        física do print selecionado em vez de apenas apagar a letra no texto!
+        """
+        focused = self.focus_get()
+        if focused is not None and isinstance(focused, (tk.Entry, ctk.CTkEntry)):
+            return True
+        if event and hasattr(event, "widget") and isinstance(event.widget, (tk.Entry, ctk.CTkEntry)):
+            return True
+        return False
+
+    def _handle_global_delete(self, event=None):
+        if self._is_typing_in_entry(event) or self.is_processing:
+            return
+        if self.gallery.get_selected_items():
+            self.gallery.delete_selected()
+
+    def _handle_global_move(self, event=None):
+        if self._is_typing_in_entry(event) or self.is_processing:
+            return
+        if self.gallery.get_selected_items():
+            self._open_move_dialog()
 
     def _create_layout(self):
         self.columnconfigure(0, weight=4, minsize=420)
@@ -226,13 +265,13 @@ class MainWindow(ctk.CTk):
 
         self.opt_format = ctk.CTkOptionMenu(
             fmt_frame,
-            values=["PNG", "JPEG"],
+            values=["PNG", "JPEG", "WEBP"],
             width=90,
             command=self._on_format_change
         )
         self.opt_format.pack(side="left", padx=(0, 15))
 
-        self.lbl_quality = ctk.CTkLabel(fmt_frame, text="Qualidade JPG (95%):", font=ctk.CTkFont(size=11))
+        self.lbl_quality = ctk.CTkLabel(fmt_frame, text="Qualidade (95%):", font=ctk.CTkFont(size=11))
         self.slider_quality = ctk.CTkSlider(
             fmt_frame,
             from_=30,
@@ -242,6 +281,21 @@ class MainWindow(ctk.CTk):
             command=self._on_quality_slider
         )
         self.slider_quality.set(95)
+
+        # Resolução de Saída
+        res_frame = ctk.CTkFrame(sec, fg_color="transparent")
+        res_frame.pack(fill="x", padx=10, pady=(0, 8))
+
+        lbl_res = ctk.CTkLabel(res_frame, text="Resolução:", font=ctk.CTkFont(size=11))
+        lbl_res.pack(side="left", padx=(0, 6))
+
+        self.opt_resolution = ctk.CTkOptionMenu(
+            res_frame,
+            values=["Original", "1080p (Full HD)", "720p (HD)", "480p (SD)"],
+            width=140
+        )
+        self.opt_resolution.set("Original")
+        self.opt_resolution.pack(side="left")
 
         prefix_frame = ctk.CTkFrame(sec, fg_color="transparent")
         prefix_frame.pack(fill="x", padx=10, pady=(0, 8))
@@ -276,11 +330,7 @@ class MainWindow(ctk.CTk):
         self.comp_random = ModeRandomFrame(
             self.tab_random,
             on_change=self._update_estimation,
-            on_refine_requested=self._start_refinement,
-            on_select_all=lambda: self.gallery.select_all(),
-            on_clear_selection=lambda: self.gallery.clear_selection(),
-            on_delete_selected=lambda: self.gallery.delete_selected(),
-            on_move_selected=self._open_move_dialog
+            on_refine_requested=self._start_refinement
         )
         self.comp_random.pack(fill="both", expand=True)
 
@@ -394,6 +444,12 @@ class MainWindow(ctk.CTk):
         self.slider_quality.set(qual)
         self._on_quality_slider(qual)
 
+        res = cfg.get("resolution", "Original")
+        try:
+            self.opt_resolution.set(res)
+        except Exception:
+            self.opt_resolution.set("Original")
+
         prefix = cfg.get("prefix", "print")
         self.entry_prefix.delete(0, "end")
         self.entry_prefix.insert(0, prefix)
@@ -408,6 +464,7 @@ class MainWindow(ctk.CTk):
         cfg["active_tab"] = self.tabview_modes.get()
         cfg["format"] = self.opt_format.get()
         cfg["jpeg_quality"] = int(self.slider_quality.get())
+        cfg["resolution"] = self.opt_resolution.get()
         cfg["prefix"] = self.entry_prefix.get().strip() or "print"
 
         if save_config(cfg):
@@ -479,7 +536,9 @@ class MainWindow(ctk.CTk):
             self.entry_output_dir.insert(0, chosen)
 
     def _on_format_change(self, value: str):
-        if value == "JPEG":
+        if value in ["JPEG", "WEBP"]:
+            tag = "JPG" if value == "JPEG" else "WebP"
+            self.lbl_quality.configure(text=f"Qualidade {tag} ({int(self.slider_quality.get())}%):")
             self.lbl_quality.pack(side="left", padx=(0, 6))
             self.slider_quality.pack(side="left")
         else:
@@ -488,7 +547,21 @@ class MainWindow(ctk.CTk):
 
     def _on_quality_slider(self, value: float):
         val = int(value)
-        self.lbl_quality.configure(text=f"Qualidade JPG ({val}%):")
+        fmt = self.opt_format.get()
+        tag = "JPG" if fmt == "JPEG" else "WebP"
+        self.lbl_quality.configure(text=f"Qualidade {tag} ({val}%):")
+
+    def _get_selected_max_height(self) -> int | None:
+        """
+        Mapeia a opção selecionada para a altura máxima em pixels (ou None para original).
+        """
+        mapping = {
+            "Original": None,
+            "1080p (Full HD)": 1080,
+            "720p (HD)": 720,
+            "480p (SD)": 480
+        }
+        return mapping.get(self.opt_resolution.get(), None)
 
     def _get_active_timestamps(self) -> list:
         if not self.video_info:
@@ -574,7 +647,8 @@ class MainWindow(ctk.CTk):
 
     def _on_gallery_selection_change(self, count: int, items: list):
         selected_ts = [item["timestamp"] for item in items if item.get("timestamp") is not None]
-        self.comp_random.update_selection(count, selected_ts)
+        all_gallery_ts = self.gallery.get_all_timestamps()
+        self.comp_random.update_selection(count, selected_ts, all_gallery_ts)
         if count > 0:
             self.btn_gal_move.configure(state="normal", text=f"📁 Mover ({count})")
             self.btn_gal_delete.configure(state="normal", text=f"🗑 Apagar ({count})")
@@ -599,6 +673,25 @@ class MainWindow(ctk.CTk):
         self.btn_select_video.configure(state="disabled" if processing else "normal")
         self.comp_random.set_processing(processing)
 
+        # Bloqueia/Restaura controles do cabeçalho da galeria
+        if processing:
+            self.btn_gal_select_all.configure(state="disabled")
+            self.btn_gal_clear_sel.configure(state="disabled")
+            self.btn_gal_move.configure(state="disabled")
+            self.btn_gal_delete.configure(state="disabled")
+        else:
+            self.btn_gal_select_all.configure(state="normal")
+            self.btn_gal_clear_sel.configure(state="normal")
+            sel_count = len(self.gallery.get_selected_items())
+            self.btn_gal_move.configure(
+                state="normal" if sel_count > 0 else "disabled",
+                text=f"📁 Mover ({sel_count})" if sel_count > 0 else "📁 Mover"
+            )
+            self.btn_gal_delete.configure(
+                state="normal" if sel_count > 0 else "disabled",
+                text=f"🗑 Apagar ({sel_count})" if sel_count > 0 else "🗑 Apagar"
+            )
+
     def _launch_extraction_worker(self, output_dir: str, timestamps: list, is_refinement: bool):
         """
         Prepara a UI e dispara a thread em segundo plano para extrair os frames.
@@ -616,11 +709,12 @@ class MainWindow(ctk.CTk):
         img_fmt = self.opt_format.get().lower()
         quality = int(self.slider_quality.get())
         prefix = self.entry_prefix.get().strip() or "print"
+        max_height = self._get_selected_max_height()
         video_path = self.video_info["path"]
 
         worker = threading.Thread(
             target=self._worker_thread,
-            args=(video_path, output_dir, timestamps, img_fmt, quality, prefix, is_refinement),
+            args=(video_path, output_dir, timestamps, img_fmt, quality, prefix, max_height, is_refinement),
             daemon=True
         )
         worker.start()
@@ -665,19 +759,22 @@ class MainWindow(ctk.CTk):
             messagebox.showwarning("Atenção", "Os prints selecionados não possuem informações de tempo registradas.")
             return
 
-        timestamps = self.comp_random.get_refinement_timestamps(base_timestamps, duration)
+        all_existing_ts = self.gallery.get_all_timestamps()
+        timestamps = self.comp_random.get_refinement_timestamps(
+            base_timestamps, duration, exclude_timestamps=all_existing_ts
+        )
         if not timestamps:
-            messagebox.showwarning("Atenção", "Nenhum ponto no tempo pôde ser gerado para o refinamento.")
+            messagebox.showinfo("Aviso", "Todos os frames possíveis dessa janela temporal já estão presentes na galeria.")
             return
 
         self._launch_extraction_worker(output_dir, timestamps, is_refinement=True)
 
-    def _worker_thread(self, video_path, output_dir, timestamps, img_fmt, quality, prefix, is_refinement=False):
+    def _worker_thread(self, video_path, output_dir, timestamps, img_fmt, quality, prefix, max_height, is_refinement=False):
         """
         Executa a extração pesada fora da thread principal e publica eventos na fila.
         """
-        def on_progress(idx, total, t, filepath):
-            self.msg_queue.put(("progress", (idx, total, t, filepath, is_refinement)))
+        def on_progress(idx, total, t, filepath, thumb_img):
+            self.msg_queue.put(("progress", (idx, total, t, filepath, thumb_img, is_refinement)))
 
         def on_error(err_msg):
             self.msg_queue.put(("error", err_msg))
@@ -690,15 +787,16 @@ class MainWindow(ctk.CTk):
                 image_format=img_fmt,
                 jpeg_quality=quality,
                 prefix=prefix,
+                max_height=max_height,
                 stop_event=self.stop_event,
                 on_progress=on_progress,
                 on_error=on_error
             )
-            self.msg_queue.put(("finished", (len(saved_files), output_dir)))
+            self.msg_queue.put(("finished", (len(saved_files), output_dir, is_refinement)))
         except Exception as e:
             err_details = f"{str(e)}\n{traceback.format_exc()}"
             self.msg_queue.put(("error", err_details))
-            self.msg_queue.put(("finished", (0, output_dir)))
+            self.msg_queue.put(("finished", (0, output_dir, is_refinement)))
 
     def _cancel_extraction(self):
         if self.is_processing:
@@ -717,16 +815,27 @@ class MainWindow(ctk.CTk):
             while not self.msg_queue.empty():
                 msg_type, payload = self.msg_queue.get_nowait()
                 if msg_type == "progress":
-                    idx, total, t, filepath, is_refinement = payload
+                    idx, total, t, filepath, thumb_img, is_refinement = payload
                     time_str = format_timestamp_display(t)
                     self.progress_section.update_progress(idx, total, time_str)
                     tag = "🎯" if is_refinement else "⏱"
-                    self.gallery.add_thumbnail(filepath, f"{tag} {time_str}", timestamp=t, is_refinement=is_refinement)
+                    # Se for refinamento, reordena no grid para encaixar cronologicamente
+                    self.gallery.add_thumbnail(
+                        filepath=filepath,
+                        label_text=f"{tag} {time_str}",
+                        timestamp=t,
+                        is_refinement=is_refinement,
+                        pil_thumbnail=thumb_img,
+                        reorder=is_refinement
+                    )
                 elif msg_type == "error":
                     self.progress_section.set_error(payload)
                 elif msg_type == "finished":
-                    count, output_dir = payload
+                    count, output_dir, is_refinement = payload
                     self._set_ui_processing_state(False)
+
+                    if is_refinement and count > 0:
+                        self.gallery.reorder_grid()
 
                     if self.stop_event.is_set():
                         self.progress_section.set_cancelled(count)

@@ -1,4 +1,5 @@
 @echo off
+title FrameTick — Precision Video Captures
 setlocal
 cd /d "%~dp0"
 

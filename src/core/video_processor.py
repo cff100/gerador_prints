@@ -117,11 +117,17 @@ class VideoProcessor:
         base_timestamps: List[float],
         window_sec: float,
         count_per_point: int,
-        duration: float
+        duration: float,
+        exclude_timestamps: Optional[List[float]] = None
     ) -> List[float]:
         """
         Gera novos carimbos de tempo na janela [T - window_sec, T + window_sec]
         ao redor de cada print favorito selecionado pelo usuário (Modo 3 - Etapa 2).
+
+        POR QUÊ `exclude_timestamps`:
+        Quando count_per_point é ímpar, a fórmula gera o próprio ponto central base_t,
+        que já foi capturado na Etapa 1. Filtrar os instantes existentes impede a
+        criação de arquivos e cards duplicados idênticos.
         """
         if duration <= 0 or count_per_point <= 0 or not base_timestamps:
             return []
@@ -141,7 +147,12 @@ class VideoProcessor:
                     t = start_t + (i * step)
                     all_timestamps.append(min(duration, max(0.0, t)))
 
-        return cls._deduplicate_and_sort(all_timestamps)
+        deduped = cls._deduplicate_and_sort(all_timestamps)
+        if not exclude_timestamps:
+            return deduped
+
+        excluded_set = {round(float(t), 3) for t in exclude_timestamps}
+        return [t for t in deduped if round(t, 3) not in excluded_set]
 
     @staticmethod
     def _seek_and_read_frame(cap: cv2.VideoCapture, timestamp_sec: float, fps: float, total_frames: int):
@@ -179,23 +190,51 @@ class VideoProcessor:
         return resolve_unique_filepath(output_dir, filename)
 
     @staticmethod
-    def _save_frame_image(frame_bgr, filepath: str, ext: str, jpeg_quality: int) -> None:
+    def _resize_frame_if_needed(frame_bgr, max_height: Optional[int]):
         """
-        Converte a matriz do OpenCV (BGR) para imagem Pillow (RGB) e salva no disco.
+        Redimensiona o frame mantendo a proporção caso a altura ultrapasse `max_height`.
 
-        POR QUÊ usar Pillow em vez de `cv2.imwrite()`:
-        No Windows, o `cv2.imwrite` do OpenCV usa a API C ANSI antiga e falha
-        silenciosamente (ou gera nomes corrompidos) quando o caminho tem acentos,
-        colchetes ou caracteres especiais (ex: 'Caio_(fora_do_drive)' ou 'São Paulo').
-        O Pillow usa o sistema de arquivos nativo UTF-8 do Python, funcionando sempre.
+        POR QUÊ:
+        1. Usamos `cv2.INTER_AREA` pois é a interpolação ideal para downsampling (redução),
+           evitando serrilhados e efeitos moiré.
+        2. Se `h <= max_height`, não fazemos upscaling para não degradar a qualidade.
+        """
+        if not max_height or max_height <= 0:
+            return frame_bgr
+
+        h, w = frame_bgr.shape[:2]
+        if h <= max_height:
+            return frame_bgr
+
+        scale = max_height / float(h)
+        new_w = max(1, int(round(w * scale)))
+        return cv2.resize(frame_bgr, (new_w, max_height), interpolation=cv2.INTER_AREA)
+
+    @staticmethod
+    def _save_frame_image(frame_bgr, filepath: str, ext: str, jpeg_quality: int) -> Image.Image:
+        """
+        Converte a matriz do OpenCV (BGR) para imagem Pillow (RGB), salva no disco e
+        retorna uma cópia da miniatura gerada em RAM.
+
+        POR QUÊ:
+        1. Salvar via Pillow evita falhas no Windows com caminhos Unicode/acentos.
+        2. Gerar a miniatura (`thumbnail`) aqui mesmo na thread de trabalho poupa a
+           Thread Principal da interface gráfica de ler o arquivo do disco novamente
+           e aplicar resampling pesado, mantendo a UI a 60 FPS.
         """
         rgb_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb_frame)
 
         if ext in ["jpg", "jpeg"]:
             img.save(filepath, format="JPEG", quality=jpeg_quality, optimize=True)
+        elif ext == "webp":
+            img.save(filepath, format="WEBP", quality=jpeg_quality, method=4)
         else:
             img.save(filepath, format="PNG", compress_level=6)
+
+        thumb = img.copy()
+        thumb.thumbnail((140, 90), Image.Resampling.LANCZOS)
+        return thumb
 
     @classmethod
     def extract_frames(
@@ -206,8 +245,9 @@ class VideoProcessor:
         image_format: str = "png",
         jpeg_quality: int = 95,
         prefix: str = "print",
+        max_height: Optional[int] = None,
         stop_event: Optional[threading.Event] = None,
-        on_progress: Optional[Callable[[int, int, float, str], None]] = None,
+        on_progress: Optional[Callable[[int, int, float, str, Image.Image], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ) -> List[str]:
         """
@@ -242,7 +282,7 @@ class VideoProcessor:
         total_targets = len(sorted_timestamps)
 
         ext = image_format.lower().replace(".", "")
-        if ext not in ["png", "jpeg", "jpg"]:
+        if ext not in ["png", "jpeg", "jpg", "webp"]:
             ext = "png"
 
         try:
@@ -255,12 +295,13 @@ class VideoProcessor:
                     continue
 
                 try:
+                    frame = cls._resize_frame_if_needed(frame, max_height)
                     filepath = cls._build_frame_filepath(output_dir, prefix, t, ext)
-                    cls._save_frame_image(frame, filepath, ext, jpeg_quality)
+                    thumb_img = cls._save_frame_image(frame, filepath, ext, jpeg_quality)
                     saved_files.append(filepath)
 
                     if on_progress:
-                        on_progress(idx, total_targets, t, filepath)
+                        on_progress(idx, total_targets, t, filepath, thumb_img)
                 except Exception as save_err:
                     if on_error:
                         on_error(f"Erro ao salvar frame {idx}: {save_err}")

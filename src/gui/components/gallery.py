@@ -9,6 +9,7 @@ from PIL import Image
 from typing import List, Dict, Any, Optional, Callable
 
 from src.core.utils import resolve_unique_filepath, open_path_in_os
+from src.gui.components.dialog_lightbox import LightboxDialog
 
 
 class GalleryFrame(ctk.CTkScrollableFrame):
@@ -52,25 +53,53 @@ class GalleryFrame(ctk.CTkScrollableFrame):
         return ctk_img
 
     def _remove_card_from_gallery(self, item: Dict[str, Any]) -> None:
-        """Destrói o widget visual do card e remove seus metadados da lista ativa."""
+        """Destrói o widget visual do card e remove seus metadados e referências de imagem."""
         if "card" in item and item["card"].winfo_exists():
             item["card"].destroy()
+        if "ctk_img" in item and item["ctk_img"] in self.image_references:
+            self.image_references.remove(item["ctk_img"])
         if item in self.items:
             self.items.remove(item)
+
+    def _grid_single_item(self, idx: int, item: Dict[str, Any]):
+        """Posiciona um item específico no grid em O(1)."""
+        row = idx // self.max_cols
+        col = idx % self.max_cols
+        item["card"].grid(row=row, column=col, padx=5, pady=5, sticky="n")
 
     def add_thumbnail(
         self,
         filepath: str,
         label_text: str = "",
         timestamp: Optional[float] = None,
-        is_refinement: bool = False
+        is_refinement: bool = False,
+        pil_thumbnail: Optional[Image.Image] = None,
+        reorder: bool = False
     ):
-        """Cria e insere um novo card de miniatura na galeria em ordem cronológica."""
+        """
+        Cria e insere um novo card de miniatura na galeria.
+
+        POR QUÊ `pil_thumbnail` e `reorder=False`:
+        1. Se a Worker Thread já gerou a miniatura na RAM, criamos o CTkImage direto,
+           sem releitura de disco ou processamento pesado na Main Thread da UI.
+        2. Nas extrações normais, os frames já chegam em ordem cronológica estrita;
+           inserir o card em O(1) na posição final evita refazer o layout de toda a grade
+           a cada frame capturado (eliminando complexidade O(N^2)).
+        """
         if not os.path.exists(filepath):
             return
 
         try:
-            ctk_img = self._load_ctk_thumbnail(filepath)
+            if pil_thumbnail:
+                ctk_img = ctk.CTkImage(
+                    light_image=pil_thumbnail,
+                    dark_image=pil_thumbnail,
+                    size=pil_thumbnail.size
+                )
+                self.image_references.append(ctk_img)
+            else:
+                ctk_img = self._load_ctk_thumbnail(filepath)
+
             card = ctk.CTkFrame(self, corner_radius=6, border_width=0, border_color="#1f6aa5")
 
             top_bar = ctk.CTkFrame(card, fg_color="transparent")
@@ -83,7 +112,8 @@ class GalleryFrame(ctk.CTkScrollableFrame):
                 "label": label_text,
                 "timestamp": timestamp,
                 "var": check_var,
-                "is_refinement": is_refinement
+                "is_refinement": is_refinement,
+                "ctk_img": ctk_img
             }
 
             def on_toggle():
@@ -135,33 +165,62 @@ class GalleryFrame(ctk.CTkScrollableFrame):
                 hover_color=("#c0c0c0", "#3a3a3a"),
                 width=140,
                 height=90,
-                command=lambda it=item_data: open_path_in_os(it["filepath"])
+                command=lambda it=item_data: self._open_lightbox(it)
             )
             btn.pack(padx=4, pady=(2, 4))
 
+            idx = len(self.items)
             self.items.append(item_data)
-            self._reorder_grid()
+
+            if reorder:
+                self.reorder_grid()
+            else:
+                self._grid_single_item(idx, item_data)
 
         except Exception as e:
             print(f"Erro ao carregar miniatura: {e}")
 
-    def _reorder_grid(self):
+    def reorder_grid(self):
         """
         Reorganiza todos os cards na grade em ordem cronológica de aparição no vídeo.
-
-        POR QUÊ: Quando o usuário usa o Modo 3 (Refinamento), novos prints são
-        gerados depois, mas pertencem a momentos anteriores do vídeo. Reordenar
-        pelo `timestamp` faz os prints refinados se encaixarem exatamente ao lado
-        do print original que lhes deu origem.
+        POR QUÊ: É chamado uma única vez ao término do Refinamento (Modo 3) ou
+        quando itens forem apagados/movidos.
         """
         self.items.sort(key=lambda x: (
             x["timestamp"] if x["timestamp"] is not None else float("inf"),
             x["filepath"]
         ))
         for idx, item in enumerate(self.items):
-            row = idx // self.max_cols
-            col = idx % self.max_cols
-            item["card"].grid(row=row, column=col, padx=5, pady=5, sticky="n")
+            self._grid_single_item(idx, item)
+
+    def _open_lightbox(self, item_data: Dict[str, Any]):
+        """Abre o visualizador Lightbox com foco no item selecionado."""
+        try:
+            curr_idx = self.items.index(item_data)
+        except ValueError:
+            curr_idx = 0
+
+        LightboxDialog(
+            parent=self.winfo_toplevel(),
+            items=self.items,
+            current_index=curr_idx,
+            on_toggle_select=self.toggle_item_selection,
+            on_delete_item=self.delete_item
+        )
+
+    def toggle_item_selection(self, item_data: Dict[str, Any]) -> bool:
+        """Alterna a seleção de um card e atualiza o estado visual."""
+        if "var" in item_data:
+            current = item_data["var"].get()
+            item_data["var"].set(not current)
+            item_data["card"].configure(border_width=0 if current else 2)
+            self._notify_selection_change()
+            return not current
+        return False
+
+    def get_all_timestamps(self) -> List[float]:
+        """Retorna todos os timestamps atualmente carregados na galeria."""
+        return [item["timestamp"] for item in self.items if item.get("timestamp") is not None]
 
     def delete_item(self, item_data: Dict[str, Any], confirm: bool = True) -> bool:
         """Apaga um print específico do disco e remove seu card da galeria."""
@@ -179,7 +238,7 @@ class GalleryFrame(ctk.CTkScrollableFrame):
             return False
 
         self._remove_card_from_gallery(item_data)
-        self._reorder_grid()
+        self.reorder_grid()
         self._notify_selection_change()
         return True
 
@@ -207,7 +266,7 @@ class GalleryFrame(ctk.CTkScrollableFrame):
             except Exception as e:
                 errors.append(f"{os.path.basename(filepath) if filepath else 'Arquivo'}: {e}")
 
-        self._reorder_grid()
+        self.reorder_grid()
         self._notify_selection_change()
 
         if errors:
@@ -268,7 +327,7 @@ class GalleryFrame(ctk.CTkScrollableFrame):
                 errors.append(f"{filename}: {e}")
 
         if remove_from_gallery and action == "move":
-            self._reorder_grid()
+            self.reorder_grid()
 
         self._notify_selection_change()
         return success_count, errors

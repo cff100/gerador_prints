@@ -18,6 +18,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "burst_offset": 0.0,
     "format": "PNG",
     "jpeg_quality": 95,
+    "resolution": "Original",
     "prefix": "print",
     "random_count": 15,
     "refine_window": 2.0,

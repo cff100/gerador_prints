@@ -7,6 +7,7 @@ env/
 
 # Preferências locais do usuário (gerado automaticamente pelo app)
 config.json
+*.lnk
 
 # Byte-compiled / cache Python
 __pycache__/
