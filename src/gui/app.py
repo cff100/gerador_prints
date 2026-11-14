@@ -462,6 +462,11 @@ class MainWindow(ctk.CTk):
             self.entry_prefix.delete(0, "end")
             self.entry_prefix.insert(0, prefix)
 
+            # Notifica os modos sobre a nova duração para atualizar as prévias
+            self.comp_uniform.set_duration(info['duration_sec'])
+            self.comp_burst.set_duration(info['duration_sec'])
+            self.comp_random.set_duration(info['duration_sec'])
+
             self._update_estimation()
 
         except Exception as e:
@@ -568,7 +573,8 @@ class MainWindow(ctk.CTk):
         )
 
     def _on_gallery_selection_change(self, count: int, items: list):
-        self.comp_random.update_selection_count(count)
+        selected_ts = [item["timestamp"] for item in items if item.get("timestamp") is not None]
+        self.comp_random.update_selection(count, selected_ts)
         if count > 0:
             self.btn_gal_move.configure(state="normal", text=f"📁 Mover ({count})")
             self.btn_gal_delete.configure(state="normal", text=f"🗑 Apagar ({count})")
