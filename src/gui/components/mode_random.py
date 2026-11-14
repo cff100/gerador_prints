@@ -286,6 +286,8 @@ class ModeRandomFrame(ctk.CTkFrame):
         window = float(self.stepper_refine_window.get_value())
         per_pt = int(self.stepper_refine_count.get_value())
 
+        prefix_tag = "📌 [Exemplo com vídeo de 10 min]\n" if is_mock else f"🎬 [Vídeo atual: {format_timestamp_display(dur)}]\n"
+
         # Explicação Etapa 1
         txt_s1 = f"• Etapa 1: Divide o vídeo em {rnd_count} fatias de ~{slice_sec:.1f}s e sorteia 1 instante em cada, cobrindo o vídeo todo sem aglomerar."
 
@@ -322,7 +324,7 @@ class ModeRandomFrame(ctk.CTkFrame):
                 f"  Trava de borda ativa: nunca gera tempo negativo (abaixo de 0s) ou acima do fim do vídeo."
             )
 
-        body = f"{txt_s1}\n{txt_s2}"
+        body = f"{prefix_tag}{txt_s1}\n{txt_s2}"
         self.lbl_preview_body.configure(text=body)
 
     def _notify_change(self):
