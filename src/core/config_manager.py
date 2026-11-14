@@ -24,15 +24,24 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "refine_count": 5
 }
 
+
 def load_config() -> Dict[str, Any]:
-    """Carrega as configurações do arquivo JSON ou retorna os padrões de fábrica."""
+    """
+    Carrega as configurações do arquivo JSON ou retorna os padrões de fábrica.
+
+    POR QUÊ:
+    1. Se `config.json` não existir (ex: projeto recém-clonado do GitHub onde o
+       arquivo fica no `.gitignore`), retorna uma cópia de `DEFAULT_CONFIG` sem falhar.
+    2. Fazemos um *Merge Defensivo* (`merged.update(data)`) sobre os padrões de
+       fábrica para garantir retrocompatibilidade: se adicionarmos uma chave nova
+       no futuro, um `config.json` antigo continuará funcionando sem dar `KeyError`.
+    """
     if not os.path.exists(CONFIG_FILE):
         return DEFAULT_CONFIG.copy()
 
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-            # Mescla com os padrões caso falte alguma chave
             merged = DEFAULT_CONFIG.copy()
             merged.update(data)
             return merged
@@ -40,8 +49,14 @@ def load_config() -> Dict[str, Any]:
         print(f"Erro ao ler config.json: {e}")
         return DEFAULT_CONFIG.copy()
 
+
 def save_config(config_data: Dict[str, Any]) -> bool:
-    """Salva o dicionário de configurações em config.json."""
+    """
+    Salva o dicionário de configurações em `config.json`.
+
+    POR QUÊ: Lemos a configuração atual antes de atualizar (`current.update`) para
+    permitir salvamentos parciais sem apagar chaves que não foram passadas no dicionário.
+    """
     try:
         current = load_config()
         current.update(config_data)
@@ -52,7 +67,8 @@ def save_config(config_data: Dict[str, Any]) -> bool:
         print(f"Erro ao salvar config.json: {e}")
         return False
 
+
 def reset_to_defaults() -> Dict[str, Any]:
-    """Restaura as configurações de fábrica e salva no arquivo."""
+    """Restaura as configurações de fábrica e persiste no disco."""
     save_config(DEFAULT_CONFIG)
     return DEFAULT_CONFIG.copy()

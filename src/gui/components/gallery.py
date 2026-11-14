@@ -3,17 +3,22 @@ Galeria com miniaturas de prints gerados, seleção com checkboxes e clique para
 """
 import os
 import shutil
-import subprocess
-import platform
 from tkinter import messagebox
 import customtkinter as ctk
 from PIL import Image
 from typing import List, Dict, Any, Optional, Callable
 
+from src.core.utils import resolve_unique_filepath, open_path_in_os
+
+
 class GalleryFrame(ctk.CTkScrollableFrame):
     def __init__(self, master, on_selection_change: Optional[Callable[[int, List[Dict[str, Any]]], None]] = None, **kwargs):
         super().__init__(master, **kwargs)
         self.items: List[Dict[str, Any]] = []
+        # POR QUÊ manter `self.image_references`:
+        # O Garbage Collector do Python apaga variáveis locais assim que um método
+        # termina. Como o motor gráfico C (Tcl/Tk) não incrementa o contador de
+        # referências do Python, sem esta lista as miniaturas sumiriam da tela!
         self.image_references: List[ctk.CTkImage] = []
         self.on_selection_change = on_selection_change
         self.max_cols = 4
@@ -22,12 +27,36 @@ class GalleryFrame(ctk.CTkScrollableFrame):
             self.columnconfigure(i, weight=1, uniform="col")
 
     def clear_gallery(self):
-        """Limpa todos os elementos da galeria."""
+        """Limpa todos os cards e libera as referências de imagem da memória."""
         for widget in self.winfo_children():
             widget.destroy()
         self.items.clear()
         self.image_references.clear()
         self._notify_selection_change()
+
+    def _load_ctk_thumbnail(self, filepath: str) -> ctk.CTkImage:
+        """
+        Carrega a imagem do disco, reduz para miniatura na RAM e empacota em CTkImage.
+
+        POR QUÊ fazemos `raw_img.copy()` dentro do bloco `with`:
+        O `Image.open()` do Pillow tem carregamento preguiçoso (lazy) e mantém um
+        lock aberto no arquivo físico no Windows. Copiar os pixels para a RAM e
+        fechar o `with` imediatamente destrava o arquivo no sistema operacional,
+        permitindo que os botões 'Mover' e 'Apagar' funcionem sem dar [WinError 32].
+        """
+        with Image.open(filepath) as raw_img:
+            pil_img = raw_img.copy()
+        pil_img.thumbnail((140, 90), Image.Resampling.LANCZOS)
+        ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=pil_img.size)
+        self.image_references.append(ctk_img)
+        return ctk_img
+
+    def _remove_card_from_gallery(self, item: Dict[str, Any]) -> None:
+        """Destrói o widget visual do card e remove seus metadados da lista ativa."""
+        if "card" in item and item["card"].winfo_exists():
+            item["card"].destroy()
+        if item in self.items:
+            self.items.remove(item)
 
     def add_thumbnail(
         self,
@@ -36,25 +65,18 @@ class GalleryFrame(ctk.CTkScrollableFrame):
         timestamp: Optional[float] = None,
         is_refinement: bool = False
     ):
-        """Adiciona uma nova miniatura à galeria com controle de seleção."""
+        """Cria e insere um novo card de miniatura na galeria em ordem cronológica."""
         if not os.path.exists(filepath):
             return
 
         try:
-            with Image.open(filepath) as raw_img:
-                pil_img = raw_img.copy()
-            pil_img.thumbnail((140, 90), Image.Resampling.LANCZOS)
-            ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=pil_img.size)
-            self.image_references.append(ctk_img)
-
+            ctk_img = self._load_ctk_thumbnail(filepath)
             card = ctk.CTkFrame(self, corner_radius=6, border_width=0, border_color="#1f6aa5")
 
-            # Barra superior do card: Checkbox, título e botão fechar/apagar
             top_bar = ctk.CTkFrame(card, fg_color="transparent")
             top_bar.pack(fill="x", padx=4, pady=(4, 1))
 
             check_var = ctk.BooleanVar(value=False)
-
             item_data: Dict[str, Any] = {
                 "card": card,
                 "filepath": filepath,
@@ -105,7 +127,6 @@ class GalleryFrame(ctk.CTkScrollableFrame):
             )
             lbl_top.pack(side="left", padx=(4, 2), fill="x", expand=True)
 
-            # Botão com a imagem para visualização em tamanho real
             btn = ctk.CTkButton(
                 card,
                 image=ctk_img,
@@ -114,7 +135,7 @@ class GalleryFrame(ctk.CTkScrollableFrame):
                 hover_color=("#c0c0c0", "#3a3a3a"),
                 width=140,
                 height=90,
-                command=lambda it=item_data: self._open_image(it["filepath"])
+                command=lambda it=item_data: open_path_in_os(it["filepath"])
             )
             btn.pack(padx=4, pady=(2, 4))
 
@@ -125,7 +146,14 @@ class GalleryFrame(ctk.CTkScrollableFrame):
             print(f"Erro ao carregar miniatura: {e}")
 
     def _reorder_grid(self):
-        """Reorganiza todos os cards na grade em ordem cronológica de aparição no vídeo."""
+        """
+        Reorganiza todos os cards na grade em ordem cronológica de aparição no vídeo.
+
+        POR QUÊ: Quando o usuário usa o Modo 3 (Refinamento), novos prints são
+        gerados depois, mas pertencem a momentos anteriores do vídeo. Reordenar
+        pelo `timestamp` faz os prints refinados se encaixarem exatamente ao lado
+        do print original que lhes deu origem.
+        """
         self.items.sort(key=lambda x: (
             x["timestamp"] if x["timestamp"] is not None else float("inf"),
             x["filepath"]
@@ -150,18 +178,13 @@ class GalleryFrame(ctk.CTkScrollableFrame):
             messagebox.showerror("Erro ao Apagar", f"Não foi possível apagar o arquivo do disco:\n{e}")
             return False
 
-        if "card" in item_data and item_data["card"].winfo_exists():
-            item_data["card"].destroy()
-
-        if item_data in self.items:
-            self.items.remove(item_data)
-
+        self._remove_card_from_gallery(item_data)
         self._reorder_grid()
         self._notify_selection_change()
         return True
 
     def delete_selected(self) -> int:
-        """Apaga todos os prints selecionados do disco e remove da galeria."""
+        """Apaga em lote todos os prints selecionados do disco e atualiza a galeria."""
         selected = self.get_selected_items()
         if not selected:
             messagebox.showinfo("Aviso", "Nenhum print selecionado para apagar.")
@@ -179,10 +202,7 @@ class GalleryFrame(ctk.CTkScrollableFrame):
             try:
                 if filepath and os.path.exists(filepath):
                     os.remove(filepath)
-                if "card" in item and item["card"].winfo_exists():
-                    item["card"].destroy()
-                if item in self.items:
-                    self.items.remove(item)
+                self._remove_card_from_gallery(item)
                 deleted_count += 1
             except Exception as e:
                 errors.append(f"{os.path.basename(filepath) if filepath else 'Arquivo'}: {e}")
@@ -202,9 +222,7 @@ class GalleryFrame(ctk.CTkScrollableFrame):
         remove_from_gallery: bool = True
     ) -> tuple[int, List[str]]:
         """
-        Move ou copia os prints selecionados para o diretório de destino.
-        Se remove_from_gallery for True e action == "move", remove da galeria.
-        Caso contrário, atualiza o caminho do arquivo para o novo destino.
+        Move ou copia os prints selecionados para `dest_dir` sem sobrescrever arquivos.
         """
         selected = self.get_selected_items()
         if not selected:
@@ -225,32 +243,22 @@ class GalleryFrame(ctk.CTkScrollableFrame):
                 continue
 
             filename = os.path.basename(src)
-            dest_file = os.path.join(dest_dir, filename)
-
-            # Evita sobreescrita caso já exista arquivo com mesmo nome no destino
-            if os.path.exists(dest_file) and os.path.abspath(src) != os.path.abspath(dest_file):
-                base, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(dest_file):
-                    dest_file = os.path.join(dest_dir, f"{base}_{counter}{ext}")
-                    counter += 1
+            same_folder = os.path.abspath(os.path.dirname(src)) == os.path.abspath(dest_dir)
+            dest_file = src if same_folder else resolve_unique_filepath(dest_dir, filename)
 
             try:
                 if action == "move":
-                    if os.path.abspath(src) != os.path.abspath(dest_file):
+                    if not same_folder:
                         shutil.move(src, dest_file)
 
                     if remove_from_gallery:
-                        if "card" in item and item["card"].winfo_exists():
-                            item["card"].destroy()
-                        if item in self.items:
-                            self.items.remove(item)
+                        self._remove_card_from_gallery(item)
                     else:
                         item["filepath"] = dest_file
                         item["var"].set(False)
                         item["card"].configure(border_width=0)
-                else:  # copy
-                    if os.path.abspath(src) != os.path.abspath(dest_file):
+                else:
+                    if not same_folder:
                         shutil.copy2(src, dest_file)
                     item["var"].set(False)
                     item["card"].configure(border_width=0)
@@ -266,11 +274,11 @@ class GalleryFrame(ctk.CTkScrollableFrame):
         return success_count, errors
 
     def get_selected_items(self) -> List[Dict[str, Any]]:
-        """Retorna os itens atualmente selecionados com seus metadados."""
+        """Retorna os itens atualmente marcados com seus metadados."""
         return [item for item in self.items if item["var"].get()]
 
     def select_all(self):
-        """Seleciona todos os itens da galeria."""
+        """Marca todos os itens da galeria."""
         for item in self.items:
             item["var"].set(True)
             item["card"].configure(border_width=2)
@@ -287,16 +295,3 @@ class GalleryFrame(ctk.CTkScrollableFrame):
         if self.on_selection_change:
             selected = self.get_selected_items()
             self.on_selection_change(len(selected), selected)
-
-    def _open_image(self, filepath: str):
-        if not os.path.exists(filepath):
-            return
-        try:
-            if platform.system() == "Windows":
-                os.startfile(filepath)
-            elif platform.system() == "Darwin":
-                subprocess.Popen(["open", filepath])
-            else:
-                subprocess.Popen(["xdg-open", filepath])
-        except Exception as e:
-            print(f"Erro ao abrir arquivo: {e}")

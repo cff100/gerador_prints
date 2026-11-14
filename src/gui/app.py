@@ -4,17 +4,15 @@ Janela Principal da Aplicação Gerador de Prints de Vídeo (CustomTkinter).
 import os
 import queue
 import threading
-import subprocess
-import platform
 import traceback
-import tkinter as tk
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from src.core.utils import (
     get_video_info,
     format_timestamp_display,
-    sanitize_filename
+    sanitize_filename,
+    open_path_in_os
 )
 from src.core.video_processor import VideoProcessor
 from src.core.config_manager import load_config, save_config, reset_to_defaults
@@ -38,7 +36,6 @@ class MainWindow(ctk.CTk):
         self.geometry("1100x780")
         self.minsize(950, 680)
 
-        # Ícone da janela e barra de tarefas
         icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "assets", "icon.ico")
         if os.path.exists(icon_path):
             try:
@@ -46,7 +43,11 @@ class MainWindow(ctk.CTk):
             except Exception:
                 pass
 
-        # Estado da aplicação
+        # POR QUÊ usar `threading.Event` e `queue.Queue`:
+        # O Tkinter roda em uma única thread (Main Loop) e NÃO é thread-safe.
+        # - `stop_event` permite sinalizar cancelamento imediato para a thread de vídeo.
+        # - `msg_queue` permite que a thread secundária envie eventos de progresso
+        #   sem tocar diretamente nos widgets da janela principal.
         self.video_info = None
         self.is_processing = False
         self.stop_event = threading.Event()
@@ -56,13 +57,12 @@ class MainWindow(ctk.CTk):
         self._load_and_apply_config()
         self._check_queue()
 
-        # Atalhos de teclado
+        # Atalhos globais de teclado
         self.bind("<Delete>", lambda e: self.gallery.delete_selected() if self.gallery.get_selected_items() else None)
         self.bind("<Control-m>", lambda e: self._open_move_dialog() if self.gallery.get_selected_items() else None)
         self.bind("<Control-M>", lambda e: self._open_move_dialog() if self.gallery.get_selected_items() else None)
 
     def _create_layout(self):
-        # Grid Principal: 2 colunas
         self.columnconfigure(0, weight=4, minsize=420)
         self.columnconfigure(1, weight=6, minsize=500)
         self.rowconfigure(0, weight=1)
@@ -74,19 +74,10 @@ class MainWindow(ctk.CTk):
         self.left_scroll.grid(row=0, column=0, sticky="nsew", padx=(15, 7), pady=15)
         self.left_scroll.columnconfigure(0, weight=1)
 
-        # 1. Seção Seleção de Vídeo
         self._build_video_selection_section()
-
-        # 2. Seção Pasta de Destino & Formato
         self._build_output_settings_section()
-
-        # 3. Seção Seleção de Modo (Abas)
         self._build_mode_section()
-
-        # 4. Seção de Gerenciamento de Padrões (Salvar / Restaurar)
         self._build_config_management_section()
-
-        # 5. Painel de Estimativa e Ações
         self._build_actions_section()
 
         # ==========================================
@@ -97,11 +88,9 @@ class MainWindow(ctk.CTk):
         self.right_frame.columnconfigure(0, weight=1)
         self.right_frame.rowconfigure(2, weight=1)
 
-        # Barra de Progresso
         self.progress_section = ProgressSection(self.right_frame)
         self.progress_section.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 5))
 
-        # Cabeçalho da Galeria com Ações Rápidas (Marcar, Desmarcar e Apagar)
         gallery_header = ctk.CTkFrame(self.right_frame, fg_color="transparent")
         gallery_header.grid(row=1, column=0, sticky="ew", padx=10, pady=(5, 2))
         gallery_header.columnconfigure(0, weight=1)
@@ -196,7 +185,6 @@ class MainWindow(ctk.CTk):
         )
         self.btn_select_video.grid(row=0, column=1)
 
-        # Card de metadados do vídeo
         self.meta_frame = ctk.CTkFrame(sec, fg_color=("#e5e5e5", "#2b2b2b"), corner_radius=6)
         self.lbl_meta_duration = ctk.CTkLabel(self.meta_frame, text="⏱ Duração: --:--", font=ctk.CTkFont(size=11))
         self.lbl_meta_duration.pack(side="left", padx=10, pady=4)
@@ -230,7 +218,6 @@ class MainWindow(ctk.CTk):
         )
         btn_dest.grid(row=0, column=1)
 
-        # Formato e Qualidade
         fmt_frame = ctk.CTkFrame(sec, fg_color="transparent")
         fmt_frame.pack(fill="x", padx=10, pady=(0, 8))
 
@@ -256,7 +243,6 @@ class MainWindow(ctk.CTk):
         )
         self.slider_quality.set(95)
 
-        # Prefixo
         prefix_frame = ctk.CTkFrame(sec, fg_color="transparent")
         prefix_frame.pack(fill="x", padx=10, pady=(0, 8))
 
@@ -430,7 +416,7 @@ class MainWindow(ctk.CTk):
             self._show_toast(" Erro ao salvar padrão.", is_error=True)
 
     def _restore_defaults(self):
-        cfg = reset_to_defaults()
+        reset_to_defaults()
         self._load_and_apply_config()
         self._show_toast(" Restaurado para os padrões de fábrica.")
 
@@ -468,7 +454,7 @@ class MainWindow(ctk.CTk):
             video_dir = os.path.dirname(chosen)
             video_name_clean = sanitize_filename(os.path.splitext(info['filename'])[0])
             default_out = os.path.join(video_dir, f"prints_{video_name_clean}")
-            
+
             self.entry_output_dir.delete(0, "end")
             self.entry_output_dir.insert(0, default_out)
 
@@ -540,12 +526,7 @@ class MainWindow(ctk.CTk):
                 return
 
         try:
-            if platform.system() == "Windows":
-                os.startfile(out_dir)
-            elif platform.system() == "Darwin":
-                subprocess.Popen(["open", out_dir])
-            else:
-                subprocess.Popen(["xdg-open", out_dir])
+            open_path_in_os(out_dir)
         except Exception as e:
             messagebox.showerror("Erro ao abrir pasta", str(e))
 
@@ -555,7 +536,6 @@ class MainWindow(ctk.CTk):
             messagebox.showinfo("Aviso", "Selecione ao menos um print na galeria para transferir.")
             return
 
-        # Descobre a pasta atual de saída como padrão
         current_out = self.entry_output_dir.get().strip()
         if not current_out or not os.path.isdir(current_out):
             first_file = selected[0].get("filepath")
@@ -590,23 +570,54 @@ class MainWindow(ctk.CTk):
     def _on_gallery_selection_change(self, count: int, items: list):
         self.comp_random.update_selection_count(count)
         if count > 0:
-            self.btn_gal_move.configure(
-                state="normal",
-                text=f"📁 Mover ({count})"
-            )
-            self.btn_gal_delete.configure(
-                state="normal",
-                text=f"🗑 Apagar ({count})"
-            )
+            self.btn_gal_move.configure(state="normal", text=f"📁 Mover ({count})")
+            self.btn_gal_delete.configure(state="normal", text=f"🗑 Apagar ({count})")
         else:
-            self.btn_gal_move.configure(
-                state="disabled",
-                text="📁 Mover"
-            )
-            self.btn_gal_delete.configure(
-                state="disabled",
-                text="🗑 Apagar"
-            )
+            self.btn_gal_move.configure(state="disabled", text="📁 Mover")
+            self.btn_gal_delete.configure(state="disabled", text="🗑 Apagar")
+
+    # ==========================================
+    # ORQUESTRAÇÃO DE THREADS E ESTADO DE UI
+    # ==========================================
+    def _set_ui_processing_state(self, processing: bool):
+        """
+        Centraliza o bloqueio/desbloqueio dos botões durante a extração.
+
+        POR QUÊ (Single Source of Truth): Evita duplicar `configure(state=...)`
+        em múltiplos métodos e garante que nenhum botão fique esquecido travado
+        quando a extração terminar ou falhar.
+        """
+        self.is_processing = processing
+        self.btn_start.configure(state="disabled" if processing else "normal")
+        self.btn_cancel.configure(state="normal" if processing else "disabled")
+        self.btn_select_video.configure(state="disabled" if processing else "normal")
+        self.comp_random.set_processing(processing)
+
+    def _launch_extraction_worker(self, output_dir: str, timestamps: list, is_refinement: bool):
+        """
+        Prepara a UI e dispara a thread em segundo plano para extrair os frames.
+
+        POR QUÊ `daemon=True`: Garante que, se o usuário fechar a janela principal
+        no meio de uma extração longa, o processo Python encerre imediatamente em
+        vez de continuar rodando escondido em segundo plano.
+        """
+        self._set_ui_processing_state(True)
+        self.stop_event.clear()
+        if not is_refinement:
+            self.gallery.clear_gallery()
+        self.progress_section.reset()
+
+        img_fmt = self.opt_format.get().lower()
+        quality = int(self.slider_quality.get())
+        prefix = self.entry_prefix.get().strip() or "print"
+        video_path = self.video_info["path"]
+
+        worker = threading.Thread(
+            target=self._worker_thread,
+            args=(video_path, output_dir, timestamps, img_fmt, quality, prefix, is_refinement),
+            daemon=True
+        )
+        worker.start()
 
     def _start_extraction(self):
         if not self.video_info:
@@ -623,26 +634,7 @@ class MainWindow(ctk.CTk):
             messagebox.showwarning("Atenção", "Nenhum ponto no tempo foi gerado com as configurações atuais.")
             return
 
-        self.is_processing = True
-        self.stop_event.clear()
-        self.btn_start.configure(state="disabled")
-        self.btn_cancel.configure(state="normal")
-        self.btn_select_video.configure(state="disabled")
-        self.comp_random.set_processing(True)
-        self.gallery.clear_gallery()
-        self.progress_section.reset()
-
-        img_fmt = self.opt_format.get().lower()
-        quality = int(self.slider_quality.get())
-        prefix = self.entry_prefix.get().strip() or "print"
-        video_path = self.video_info["path"]
-
-        worker = threading.Thread(
-            target=self._worker_thread,
-            args=(video_path, output_dir, timestamps, img_fmt, quality, prefix, False),
-            daemon=True
-        )
-        worker.start()
+        self._launch_extraction_worker(output_dir, timestamps, is_refinement=False)
 
     def _start_refinement(self):
         if self.is_processing:
@@ -672,27 +664,12 @@ class MainWindow(ctk.CTk):
             messagebox.showwarning("Atenção", "Nenhum ponto no tempo pôde ser gerado para o refinamento.")
             return
 
-        self.is_processing = True
-        self.stop_event.clear()
-        self.btn_start.configure(state="disabled")
-        self.btn_cancel.configure(state="normal")
-        self.btn_select_video.configure(state="disabled")
-        self.comp_random.set_processing(True)
-        self.progress_section.reset()
-
-        img_fmt = self.opt_format.get().lower()
-        quality = int(self.slider_quality.get())
-        prefix = self.entry_prefix.get().strip() or "print"
-        video_path = self.video_info["path"]
-
-        worker = threading.Thread(
-            target=self._worker_thread,
-            args=(video_path, output_dir, timestamps, img_fmt, quality, prefix, True),
-            daemon=True
-        )
-        worker.start()
+        self._launch_extraction_worker(output_dir, timestamps, is_refinement=True)
 
     def _worker_thread(self, video_path, output_dir, timestamps, img_fmt, quality, prefix, is_refinement=False):
+        """
+        Executa a extração pesada fora da thread principal e publica eventos na fila.
+        """
         def on_progress(idx, total, t, filepath):
             self.msg_queue.put(("progress", (idx, total, t, filepath, is_refinement)))
 
@@ -723,16 +700,18 @@ class MainWindow(ctk.CTk):
             self.btn_cancel.configure(state="disabled")
 
     def _check_queue(self):
+        """
+        Consome eventos da fila a cada 80ms na Main Thread para atualizar a GUI com segurança.
+
+        POR QUÊ 80ms (`self.after(80, ...)`): É rápido o suficiente (~12.5 Hz) para
+        que a barra de progresso e as miniaturas pareçam instantâneas ao olho humano,
+        sem sobrecarregar o loop de eventos do Tkinter.
+        """
         try:
             while not self.msg_queue.empty():
                 msg_type, payload = self.msg_queue.get_nowait()
                 if msg_type == "progress":
-                    if len(payload) == 5:
-                        idx, total, t, filepath, is_refinement = payload
-                    else:
-                        idx, total, t, filepath = payload
-                        is_refinement = False
-
+                    idx, total, t, filepath, is_refinement = payload
                     time_str = format_timestamp_display(t)
                     self.progress_section.update_progress(idx, total, time_str)
                     tag = "🎯" if is_refinement else "⏱"
@@ -741,11 +720,7 @@ class MainWindow(ctk.CTk):
                     self.progress_section.set_error(payload)
                 elif msg_type == "finished":
                     count, output_dir = payload
-                    self.is_processing = False
-                    self.btn_start.configure(state="normal")
-                    self.btn_cancel.configure(state="disabled")
-                    self.btn_select_video.configure(state="normal")
-                    self.comp_random.set_processing(False)
+                    self._set_ui_processing_state(False)
 
                     if self.stop_event.is_set():
                         self.progress_section.set_cancelled(count)
