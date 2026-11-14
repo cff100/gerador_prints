@@ -69,7 +69,6 @@ gerador_prints/
 │       │   └── stepper_entry.py
 │       └── app.py
 ├── .gitignore
-├── config.json             # Configurações salvas e padrões
 ├── iniciar.bat             # Atalho de inicialização rápida no Windows
 ├── LICENSE                 # Licença do projeto (MIT)
 ├── README.md               # Documentação
@@ -130,6 +129,9 @@ python run.py
 
 **No Windows:**
 Você também pode simplesmente dar um duplo clique no arquivo `iniciar.bat`.
+
+> [!TIP]
+> Suas preferências (formato, prefixo, parâmetros dos modos) são salvas localmente em `config.json`, criado automaticamente ao clicar em "Salvar padrões". Esse arquivo não é versionado; em uma instalação nova, o app inicia com os valores padrão.
 
 ---
 

@@ -5,6 +5,9 @@ ENV/
 env/
 .env
 
+# Preferências locais do usuário (gerado automaticamente pelo app)
+config.json
+
 # Byte-compiled / cache Python
 __pycache__/
 *.py[cod]
